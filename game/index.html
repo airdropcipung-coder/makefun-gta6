@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palmera Bay — A Sunset City Story</title>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1210;
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #fff; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .hidden { display: none !important; }
+  /* --- HUD --- */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  #stars { position: absolute; top: 12px; left: 14px; font-size: 26px; letter-spacing: 3px;
+    color: #ffd60a; text-shadow: 0 2px 6px rgba(0,0,0,.7); }
+  #cash { position: absolute; top: 44px; left: 16px; font-size: 20px; font-weight: 700;
+    color: #7dff9a; text-shadow: 0 2px 6px rgba(0,0,0,.7); }
+  #respect { position: absolute; top: 70px; left: 16px; font-size: 13px; color: #ffd60a;
+    text-shadow: 0 2px 4px rgba(0,0,0,.7); }
+  #bars { position: absolute; top: 96px; left: 16px; width: 190px; }
+  .bar { height: 10px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.35);
+    border-radius: 5px; margin-bottom: 5px; overflow: hidden; }
+  .bar > div { height: 100%; width: 100%; }
+  #health-fill { background: #2ecc71; }
+  #armor-fill { background: #3498db; }
+  #minimap { position: absolute; top: 12px; right: 14px; width: 180px; height: 180px;
+    border: 2px solid rgba(255,255,255,.5); border-radius: 50%; background: #101c26;
+    box-shadow: 0 2px 10px rgba(0,0,0,.6); }
+  #objective { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    max-width: 46%; text-align: center; font-size: 15px; font-weight: 600;
+    background: rgba(0,0,0,.55); padding: 8px 14px; border-radius: 8px; }
+  #message { position: absolute; top: 64px; left: 50%; transform: translateX(-50%);
+    max-width: 60%; text-align: center; font-size: 17px; font-weight: 700; color: #ffd60a;
+    text-shadow: 0 2px 6px rgba(0,0,0,.8); transition: opacity .4s; }
+  #speed { position: absolute; bottom: 18px; right: 20px; font-size: 26px; font-weight: 800;
+    text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #ammo { position: absolute; bottom: 18px; left: 16px; font-size: 15px; font-weight: 600;
+    text-shadow: 0 2px 4px rgba(0,0,0,.8); }
+  #timer { position: absolute; top: 200px; right: 16px; font-size: 20px; font-weight: 800;
+    color: #ff6b6b; text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #crosshair { position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+    margin: -7px 0 0 -7px; border: 2px solid rgba(255,255,255,.85); border-radius: 50%; }
+  /* --- Menus --- */
+  .menu { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: linear-gradient(180deg, rgba(20,8,20,.55), rgba(255,120,60,.25) 55%, rgba(20,8,20,.7)); }
+  .menu h1 { font-size: 64px; margin: 0; letter-spacing: 4px; color: #ffd60a;
+    text-shadow: 0 4px 0 #e07856, 0 8px 24px rgba(0,0,0,.8); font-style: italic; }
+  .menu h2 { font-size: 20px; margin: 8px 0 24px; font-weight: 400; color: #ffe9c9; }
+  .menu p { max-width: 560px; line-height: 1.6; color: #f5e9d8; }
+  .menu .keys { font-size: 14px; background: rgba(0,0,0,.5); padding: 12px 18px;
+    border-radius: 10px; margin: 16px 0; }
+  .menu .press { font-size: 20px; font-weight: 700; color: #ffd60a;
+    animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  .menu h3 { font-size: 30px; color: #ffd60a; margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Palmera Bay: an open-world crime game. Drive, steal cars, run missions and lose the police."></canvas>
+<p id="status" role="status" aria-live="polite"></p>
+
+<div id="hud">
+  <div id="stars">☆☆☆☆☆</div>
+  <div id="cash">$0</div>
+  <div id="respect">Respect 0</div>
+  <div id="bars">
+    <div class="bar"><div id="health-fill"></div></div>
+    <div class="bar"><div id="armor-fill"></div></div>
+  </div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="objective">Welcome to Palmera Bay.</div>
+  <div id="message" style="opacity:0"></div>
+  <div id="speed"></div>
+  <div id="ammo">Fists — press F to punch</div>
+  <div id="timer"></div>
+  <div id="crosshair"></div>
+</div>
+
+<div id="title" class="menu">
+  <h1>PALMERA BAY</h1>
+  <h2>A Sunset City Story — an original open-world crime game</h2>
+  <p>You are Danny Reyes, a driver for hire. Mama Rosa of the Rosa Garage has work for
+  you — five jobs, from a first fare to the big score — and the Vipers crew wants you off
+  their streets. Steal cars, outrun the police, and run Palmera Bay.</p>
+  <div class="keys">WASD / arrows — move &amp; drive &nbsp;·&nbsp; E — enter / exit car &nbsp;·&nbsp;
+  F — punch &nbsp;·&nbsp; Click — shoot &nbsp;·&nbsp; Shift — sprint &nbsp;·&nbsp; Space — handbrake<br>
+  Esc — pause &nbsp;·&nbsp; Enter — start mission &nbsp;·&nbsp; M — mute</div>
+  <div class="press">Press Enter to play</div>
+</div>
+
+<div id="pause" class="menu hidden">
+  <h3>Paused</h3>
+  <p>Your progress is saved. The city waits.</p>
+  <div class="press">Press Esc to keep playing</div>
+</div>
+
+<div id="gameover" class="menu hidden">
+  <h3 id="over-reason">Busted!</h3>
+  <p>You lost $100 and woke up at the safehouse. The garage still needs you.</p>
+  <div class="press">Press Enter to get back out there</div>
+</div>
+
+<div id="complete" class="menu hidden">
+  <h3>Story Complete!</h3>
+  <p>You ran all five jobs and you run Palmera Bay now. Free roam continues —
+  take taxi fares, collect cash, and keep the cops guessing.</p>
+  <div class="press">Press Enter to keep playing</div>
+</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
