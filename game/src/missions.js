@@ -1,268 +1,303 @@
-// Missions and story: Danny Reyes, a driver for hire in Palmera Bay, works for
-// Mama Rosa of the Rosa Garage, against the rival Vipers crew. Five story missions
-// in a chain, plus taxi fares and cash pickups for free-roam money. Every mission is
-// a marker on the map and a line of objective text — the judge's second criterion is
-// depth, so the chain has a beginning, a middle and a payoff.
+// The story: five missions in a chain, taxi fares for free roam, and ten cash
+// pickups hidden around the city. Each mission is a small state machine with a
+// marker on the map and an objective line on the HUD.
+
 import * as THREE from 'three';
-import { MISSIONS } from './config.js';
+import { CFG, LANDMARKS, MISSIONS } from './config.js';
 
-const STORY = [
-  {
-    id: 'fare',
-    title: 'Mission 1 — First Fare',
-    brief: 'Mama Rosa needs a driver. Take the taxi to the Bay Hotel.',
-    objective: 'Drive to the yellow marker at the Bay Hotel.',
-    onStart(game) {
-      game.marker = { x: 200, z: -100, label: 'Bay Hotel' };
-    },
-    update(game, dt) {
-      if (game.atMarker(10)) return 'done';
-      return null;
-    },
-    reward: 120,
-  },
-  {
-    id: 'hotwheels',
-    title: 'Mission 2 — Hot Wheels',
-    brief: 'The Vipers left a red sports car at the docks. Steal it and bring it to the garage.',
-    objective: 'Steal the red sports car at the docks and deliver it to the Rosa Garage.',
-    onStart(game) {
-      game.spawnMissionCar(0xff2222, -300, 300);
-      game.marker = { x: -300, z: 300, label: 'Docks — red sports car' };
-    },
-    update(game, dt) {
-      if (game.missionStage === 0 && game.playerInMissionCar()) {
-        game.missionStage = 1;
-        game.marker = { x: -200, z: 0, label: 'Rosa Garage' };
-        game.setObjective('Deliver the sports car to the Rosa Garage.');
-        game.police.addWanted(1);
-      }
-      if (game.missionStage === 1 && game.atMarker(12)) return 'done';
-      return null;
-    },
-    reward: 300,
-  },
-  {
-    id: 'pickup',
-    title: 'Mission 3 — The Pickup',
-    brief: 'A package is waiting at the market. Collect it on foot, then lose the cops.',
-    objective: 'Walk to the market, collect the package, then get back to a car.',
-    onStart(game) {
-      game.marker = { x: 100, z: 200, label: 'Market — package' };
-    },
-    update(game, dt) {
-      if (game.missionStage === 0 && game.atMarker(8)) {
-        game.missionStage = 1;
-        game.marker = { x: 0, z: 0, label: 'Get to a car' };
-        game.setObjective('Package collected. Get to a car and lose the cops.');
-        game.police.addWanted(2);
-      }
-      if (game.missionStage === 1 && game.player.inCar && game.police.wanted === 0) return 'done';
-      return null;
-    },
-    reward: 350,
-  },
-  {
-    id: 'bankrun',
-    title: 'Mission 4 — Bank Run',
-    brief: 'Three drops, two and a half minutes, and the whole city watching. Go.',
-    objective: 'Hit all three checkpoints before the timer runs out.',
-    onStart(game) {
-      game.missionTimer = 150;
-      game.missionCheckpoints = [
-        { x: 300, z: 100 },
-        { x: -300, z: -200 },
-        { x: 100, z: -300 },
-      ];
-      game.marker = { x: 300, z: 100, label: 'Checkpoint 1 of 3' };
-      game.police.addWanted(2);
-    },
-    update(game, dt) {
-      game.missionTimer -= dt;
-      if (game.missionTimer <= 0) return 'failed';
-      if (game.atMarker(12)) {
-        game.missionCheckpoints.shift();
-        if (game.missionCheckpoints.length === 0) return 'done';
-        const next = game.missionCheckpoints[0];
-        game.marker = {
-          x: next.x,
-          z: next.z,
-          label: `Checkpoint ${3 - game.missionCheckpoints.length + 1} of 3`,
-        };
-      }
-      return null;
-    },
-    reward: 500,
-  },
-  {
-    id: 'bigscore',
-    title: 'Mission 5 — The Big Score',
-    brief: 'Bay Jewelers, one quiet minute, then run. This is the one that sets you free.',
-    objective: 'Stand at the jewelers until the job is done, then escape to the safehouse.',
-    onStart(game) {
-      game.marker = { x: 0, z: -200, label: 'Bay Jewelers' };
-      game.missionTimer = 0;
-    },
-    update(game, dt) {
-      if (game.missionStage === 0) {
-        if (game.atMarker(10)) {
-          game.missionTimer += dt;
-          game.setObjective(`Robbing the jewelers… ${Math.ceil(5 - game.missionTimer)}s — stay put.`);
-          if (game.missionTimer >= 5) {
-            game.missionStage = 1;
-            game.marker = { x: -350, z: 350, label: 'Safehouse' };
-            game.setObjective('The score is yours. Escape to the safehouse!');
-            game.police.setWanted(3);
-            game.player.cash += 800;
-          }
-        } else {
-          game.missionTimer = 0;
-          game.setObjective('Stand at the jewelers until the job is done.');
-        }
-      }
-      if (game.missionStage === 1 && game.atMarker(12) && game.police.wanted === 0) return 'done';
-      return null;
-    },
-    reward: 1000,
-  },
-];
+function makeBeacon(scene) {
+  const group = new THREE.Group();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.2, 2.2, 26, 16, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xffd24a, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  beam.position.y = 13;
+  group.add(beam);
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(3, 0.28, 8, 32),
+    new THREE.MeshBasicMaterial({ color: 0xffd24a }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.25;
+  group.add(ring);
+  group.visible = false;
+  scene.add(group);
+  return group;
+}
 
-export function createMissions(game) {
-  let index = -1; // no story mission active; -1 means free roam
-  let stage = 0;
+function makePickupMesh(scene, x, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.7),
+    new THREE.MeshStandardMaterial({ color: 0xffc800, emissive: 0xaa7700, emissiveIntensity: 0.8, metalness: 0.6, roughness: 0.3 }),
+  );
+  mesh.position.set(x, 1.1, z);
+  scene.add(mesh);
+  return mesh;
+}
+
+export function createMissions(scene, world, player, vehicles, police, audio, save, hud, rng, hooks) {
+  const beacon = makeBeacon(scene);
+  const checkpoints = [LANDMARKS.hotel, LANDMARKS.docks, LANDMARKS.plaza];
+  let index = save.mission; // next mission to play
+  let phase = 0;
   let timer = 0;
-  let checkpoints = [];
-  let taxi = null; // active taxi fare: {pickup, drop, passenger}
-  let pickups = []; // cash pickups on the map: {mesh, x, z, taken}
+  let standTime = 0;
+  let taxiCar = null;
+  let sportCar = null;
+  let fare = null; // { ped, dest, active }
+  let fareTimer = 0;
+  const pickups = [];
+  let marker = null;
+
+  // Cash pickups at seeded spots on sidewalks.
+  for (let i = 0; i < CFG.pickupCount; i++) {
+    const p = world.randomStreetPoint();
+    const x = p.axis === 'z' ? p.x + 9 : p.x;
+    const z = p.axis === 'z' ? p.z : p.z + 9;
+    const mesh = makePickupMesh(scene, x, z);
+    pickups.push({ x, z, mesh, taken: save.pickups.includes(i), id: i });
+    if (save.pickups.includes(i)) mesh.visible = false;
+  }
+
+  function setMarker(x, z, visible) {
+    marker = visible === false ? null : { x, z };
+    beacon.visible = visible !== false;
+    if (marker) beacon.position.set(marker.x, 0, marker.z);
+  }
 
   function current() {
-    return index >= 0 && index < STORY.length ? STORY[index] : null;
+    return MISSIONS[index] || null;
   }
 
-  function start(i) {
-    index = i;
-    stage = 0;
+  function startMission() {
+    const m = current();
+    if (!m) {
+      hud.setObjective('Free roam — fares and pickups around the city');
+      setMarker(0, 0, false);
+      return;
+    }
+    phase = 0;
     timer = 0;
-    checkpoints = [];
-    const mission = current();
-    if (mission) {
-      game.setObjective(mission.objective);
-      game.showMessage(`${mission.title} — ${mission.brief}`);
-      mission.onStart(game);
+    standTime = 0;
+    hud.setMission(m.name);
+    hud.setObjective(m.objective);
+    hud.toast(`Mission ${index + 1}: ${m.name} — ${m.brief}`);
+    audio.pickup();
+    if (m.id === 'fare') {
+      taxiCar = vehicles.spawnCar('taxi', LANDMARKS.garage.x + 8, LANDMARKS.garage.z + 6, Math.PI / 2, 'parked');
+      setMarker(taxiCar.x, taxiCar.z);
+    } else if (m.id === 'wheels') {
+      sportCar = vehicles.spawnCar('sport', LANDMARKS.docks.x - 6, LANDMARKS.docks.z + 4, Math.PI, 'parked');
+      setMarker(LANDMARKS.docks.x, LANDMARKS.docks.z);
+    } else if (m.id === 'pickup') {
+      setMarker(LANDMARKS.market.x, LANDMARKS.market.z);
+    } else if (m.id === 'bank') {
+      police.setHeat(40);
+      timer = 150;
+      setMarker(checkpoints[0].x, checkpoints[0].z);
+    } else if (m.id === 'score') {
+      setMarker(LANDMARKS.jewelers.x, LANDMARKS.jewelers.z);
     }
   }
 
-  function complete() {
-    const mission = current();
-    if (mission) {
-      game.player.cash += mission.reward;
-      game.player.respect += 1;
-      game.showMessage(`${mission.title} complete! +$${mission.reward}`);
-      game.audio.mission();
-    }
-    game.marker = null;
+  function completeMission() {
+    const m = current();
+    if (!m) return;
+    save.cash += m.pay;
+    save.respect += 10;
+    audio.complete();
+    hud.toast(`Mission complete: ${m.name} — +$${m.pay}`);
+    if (hooks.onMissionComplete) hooks.onMissionComplete(m);
     index += 1;
-    stage = 0;
-    if (index >= STORY.length) {
-      game.setObjective('Story complete! Free roam — take taxi fares and collect cash.');
-      game.showMessage('Story complete — you run Palmera Bay now.');
-      index = -1;
+    save.mission = index;
+    if (index >= MISSIONS.length) {
+      save.storyDone = true;
+      if (hooks.onStoryComplete) hooks.onStoryComplete();
+      hud.setObjective('Story complete — free roam: fares, pickups, trouble');
+      setMarker(0, 0, false);
     } else {
-      start(index);
+      startMission();
     }
   }
 
-  function fail(reason) {
-    game.showMessage(`Mission failed — ${reason}. Try again from the garage.`);
-    game.marker = null;
-    index = -1;
-    stage = 0;
-    game.setObjective('Free roam — press Enter to start the next mission.');
+  function failMission(reason) {
+    audio.fail();
+    hud.toast(`Mission failed: ${reason} — try again`);
+    if (hooks.onMissionFail) hooks.onMissionFail(reason);
+    police.reset();
+    startMission();
   }
 
-  function update(dt) {
-    const mission = current();
-    if (mission) {
-      game.missionStage = stage;
-      game.missionTimer = timer;
-      game.missionCheckpoints = checkpoints;
-      const result = mission.update(game, dt);
-      stage = game.missionStage;
-      timer = game.missionTimer;
-      checkpoints = game.missionCheckpoints;
-      if (result === 'done') complete();
-      else if (result === 'failed') fail('time ran out');
-    }
-    // Taxi fares: a glowing pedestrian waits; drive them to the marker for cash.
-    if (taxi && !taxi.passenger && game.atMarker(10)) {
-      taxi.passenger = true;
-      game.marker = { x: taxi.drop.x, z: taxi.drop.z, label: 'Taxi fare — drop off' };
-      game.setObjective('Passenger aboard. Drive to the drop-off marker.');
-      game.showMessage('Passenger aboard — drive to the drop-off.');
-    }
-    if (taxi && taxi.passenger && game.atMarker(10)) {
-      game.player.cash += MISSIONS.taxiFare;
-      game.showMessage(`Fare complete! +$${MISSIONS.taxiFare}`);
-      game.audio.pickup();
-      taxi = null;
-      game.marker = null;
-      game.setObjective(current() ? current().objective : 'Free roam — press Enter to start the next mission.');
-    }
-    // Cash pickups.
-    for (const p of pickups) {
-      if (p.taken) continue;
-      const px = game.player.inCar ? game.player.inCar.x : game.player.x;
-      const pz = game.player.inCar ? game.player.inCar.z : game.player.z;
-      if (Math.hypot(p.x - px, p.z - pz) < 4) {
-        p.taken = true;
-        p.mesh.visible = false;
-        game.player.cash += MISSIONS.pickupCash;
-        game.showMessage(`+$${MISSIONS.pickupCash} cash pickup`);
-        game.audio.pickup();
-      }
-    }
+  // A taxi fare: a waiting pedestrian, then a destination.
+  function startFare() {
+    if (fare || !save.storyDone) return;
+    const p = world.randomStreetPoint();
+    const ped = { x: p.x, z: p.z };
+    const dest = rng.pick([LANDMARKS.hotel, LANDMARKS.plaza, LANDMARKS.docks, LANDMARKS.market]);
+    fare = { ped, dest, active: false, waiting: true };
+    setMarker(ped.x, ped.z);
+    hud.toast('Taxi fare waiting — drive to the passenger');
+    hud.setObjective('Pick up the taxi fare');
   }
 
-  function spawnPickups(scene) {
-    const geo = new THREE.CylinderGeometry(0.7, 0.7, 0.25, 12);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x2ecc71, emissive: 0x27ae60, emissiveIntensity: 0.8 });
-    for (let i = 0; i < 10; i++) {
-      const p = game.world.randomSidewalkPoint();
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(p.x, 0.5, p.z);
-      mesh.rotation.x = Math.PI / 2;
-      scene.add(mesh);
-      pickups.push({ mesh, x: p.x, z: p.z, taken: false });
-    }
-  }
-
-  function startTaxi(game) {
-    if (taxi) return;
-    const p = game.world.randomSidewalkPoint();
-    const drop = game.world.randomRoadPoint();
-    taxi = { pickup: p, drop };
-    game.marker = { x: p.x, z: p.z, label: 'Taxi fare — pick up the passenger' };
-    game.setObjective('Pick up the taxi passenger at the yellow marker.');
-    game.showMessage('Taxi fare: pick up the passenger.');
-  }
-
-  return {
+  const missions = {
     get index() {
       return index;
     },
-    get stage() {
-      return stage;
+    get marker() {
+      return marker;
     },
-    current,
-    start,
-    update,
-    spawnPickups,
-    startTaxi,
-    get taxi() {
-      return taxi;
+    get timerLeft() {
+      return timer;
     },
-    get pickups() {
-      return pickups;
+    get fare() {
+      return fare;
+    },
+    get storyDone() {
+      return index >= MISSIONS.length;
+    },
+    start: startMission,
+    startFare,
+    // Pose a marker and objective without touching the story (screenshots).
+    stageMarker(x, z, objective) {
+      setMarker(x, z);
+      hud.setObjective(objective);
+    },
+
+    // Called when the player gets into a car.
+    onEnterCar(car) {
+      const m = current();
+      if (!m) return;
+      if (m.id === 'fare' && car === taxiCar && phase === 0) {
+        phase = 1;
+        setMarker(LANDMARKS.hotel.x, LANDMARKS.hotel.z);
+        hud.setObjective('Drive the taxi to the Bay Hotel');
+      }
+      if (m.id === 'wheels' && car === sportCar && phase === 0) {
+        phase = 1;
+        police.addHeat(20);
+        hud.toast('Stolen! The Vipers want their car back.');
+        setMarker(LANDMARKS.garage.x, LANDMARKS.garage.z);
+        hud.setObjective('Deliver the sports car to Rosa Garage');
+      }
+      if (fare && fare.waiting) {
+        const d = Math.hypot(car.x - fare.ped.x, car.z - fare.ped.z);
+        if (d < 8) {
+          fare.waiting = false;
+          fare.active = true;
+          setMarker(fare.dest.x, fare.dest.z);
+          hud.toast(`Fare aboard — take them to ${fare.dest.name}`);
+          hud.setObjective(`Taxi fare: ${fare.dest.name}`);
+        }
+      }
+    },
+
+    update(dt, inCar) {
+      // Beacon pulse.
+      beacon.rotation.y += dt * 0.8;
+      beacon.scale.setScalar(1 + Math.sin(Date.now() * 0.004) * 0.06);
+      for (const p of pickups) {
+        if (!p.taken) p.mesh.rotation.y += dt * 2;
+      }
+
+      // Cash pickups: walk or drive through one.
+      const px = inCar ? vehicles.playerCar.x : player.x;
+      const pz = inCar ? vehicles.playerCar.z : player.z;
+      for (const p of pickups) {
+        if (p.taken) continue;
+        if (Math.hypot(p.x - px, p.z - pz) < 2.6) {
+          p.taken = true;
+          p.mesh.visible = false;
+          save.cash += CFG.pickupPay;
+          save.pickups.push(p.id);
+          audio.cash();
+          hud.toast(`Cash pickup +$${CFG.pickupPay}`);
+        }
+      }
+
+      const m = current();
+      if (!m) {
+        // Free roam: keep a fare waiting.
+        if (!fare) {
+          fareTimer += dt;
+          if (fareTimer > 20) {
+            fareTimer = 0;
+            startFare();
+          }
+        } else if (fare.active) {
+          if (Math.hypot(fare.dest.x - px, fare.dest.z - pz) < 9) {
+            const pay = rng.pick(CFG.farePay);
+            save.cash += pay;
+            save.faresDone += 1;
+            audio.cash();
+            hud.toast(`Fare complete +$${pay}`);
+            fare = null;
+            fareTimer = 0;
+            hud.setObjective('Free roam — fares and pickups around the city');
+            setMarker(0, 0, false);
+          }
+        }
+        return;
+      }
+
+      const dist = marker ? Math.hypot(marker.x - px, marker.z - pz) : Infinity;
+      if (m.id === 'fare') {
+        if (phase === 1 && dist < 9) completeMission();
+      } else if (m.id === 'wheels') {
+        if (phase === 1 && dist < 9) {
+          if (vehicles.playerCar === sportCar) completeMission();
+        }
+      } else if (m.id === 'pickup') {
+        if (phase === 0 && dist < 4 && !inCar) {
+          phase = 1;
+          police.setHeat(40);
+          hud.toast('Package taken — run to the Safehouse, two stars on you!');
+          setMarker(LANDMARKS.safehouse.x, LANDMARKS.safehouse.z);
+          hud.setObjective('Escape to the Safehouse');
+        } else if (phase === 1 && dist < 9) {
+          completeMission();
+        }
+      } else if (m.id === 'bank') {
+        timer -= dt;
+        if (timer <= 0) {
+          failMission('Out of time on the Bank Run');
+          return;
+        }
+        if (dist < 9) {
+          phase += 1;
+          audio.pickup();
+          if (phase >= 3) {
+            completeMission();
+          } else {
+            setMarker(checkpoints[phase].x, checkpoints[phase].z);
+            hud.toast(`Checkpoint ${phase} of 3 — ${Math.ceil(timer)}s left`);
+          }
+        }
+      } else if (m.id === 'score') {
+        if (phase === 0 && dist < 6) {
+          phase = 1;
+          standTime = 0;
+          hud.toast('Hold the door — 5 seconds…');
+          hud.setObjective('Hold at Bay Jewelers for 5 seconds');
+        } else if (phase === 1) {
+          if (dist < 6) {
+            standTime += dt;
+            if (standTime >= 5) {
+              phase = 2;
+              police.setHeat(60);
+              save.cash += 200;
+              hud.toast('Vault open! Three stars — get to the Safehouse!');
+              setMarker(LANDMARKS.safehouse.x, LANDMARKS.safehouse.z);
+              hud.setObjective('Escape to the Safehouse');
+            }
+          } else {
+            standTime = Math.max(0, standTime - dt);
+          }
+        } else if (phase === 2 && dist < 9) {
+          completeMission();
+        }
+      }
     },
   };
+  return missions;
 }

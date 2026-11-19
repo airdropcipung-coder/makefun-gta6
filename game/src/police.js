@@ -1,167 +1,213 @@
-// The wanted system: stars, heat, and police who respond. Crimes add stars; hiding
-// out of sight lets them cool down. Police cars chase and ram, foot cops chase on
-// foot, and at 3+ stars they set up ahead of the player. Getting caught on foot is
-// Busted; at zero health it is Wasted — either way the run restarts at the
-// safehouse, minus some cash.
+// The wanted system: heat builds with crimes and cools when the player hides.
+// Police cars chase and ram; foot cops chase on foot and bust the player when
+// they catch him. Stars are heat divided by twenty, capped at five.
+
 import * as THREE from 'three';
-import { WANTED } from './config.js';
-import { makeCarMesh } from './vehicles.js';
+import { CFG } from './config.js';
 
-export function createPolice(scene, world, vehicles, rng) {
-  const cops = []; // {mesh, x, z, angle, speed, onFoot, car}
-  let wanted = 0;
-  let heatTimer = 0; // time since the last crime
-  let decayTimer = 0;
+function copMesh() {
+  const group = new THREE.Group();
+  const navy = new THREE.MeshStandardMaterial({ color: 0x1e2f4a, roughness: 0.85 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xb98a68, roughness: 0.8 });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.66, 0.32), navy);
+  torso.position.y = 1.08;
+  torso.castShadow = true;
+  group.add(torso);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.36, 0.34), skin);
+  head.position.y = 1.62;
+  head.castShadow = true;
+  group.add(head);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.12, 0.38), navy);
+  cap.position.y = 1.84;
+  group.add(cap);
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.7, 0.22), navy);
+  legL.position.set(-0.15, 0.35, 0);
+  group.add(legL);
+  const legR = legL.clone();
+  legR.position.x = 0.15;
+  group.add(legR);
+  return { group, legL, legR };
+}
 
-  function spawnPoliceCar() {
-    const p = world.randomRoadPoint();
-    const mesh = makeCarMesh(0x111111, true);
-    mesh.position.set(p.x, 0, p.z);
-    scene.add(mesh);
-    const cop = { mesh, x: p.x, z: p.z, angle: 0, speed: 0, onFoot: false, car: null };
-    cops.push(cop);
-    return cop;
+export function createPolice(scene, world, vehicles, rng, hooks) {
+  const copCars = [];
+  const footCops = [];
+  let heat = 0;
+  let lastCrime = -999;
+  let bustTimer = 0;
+  let time = 0;
+
+  function spawnCopCar(px, pz) {
+    const p = world.randomStreetPoint();
+    const car = vehicles.spawnCar('police', p.x, p.z, 0, 'police');
+    // Nudge the spawn towards the player so the chase starts close.
+    car.x = px + (car.x - px) * 0.5;
+    car.z = pz + (car.z - pz) * 0.5;
+    car.speed = CFG.copCarSpeed * 0.7;
+    copCars.push(car);
+    return car;
   }
 
-  function spawnFootCop(x, z) {
-    const group = new THREE.Group();
-    const uniform = new THREE.MeshStandardMaterial({ color: 0x1a2a6c, roughness: 0.85 });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, 1.1, 8), uniform);
-    body.position.y = 1.15;
-    body.castShadow = true;
-    group.add(body);
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.3, 10, 8),
-      new THREE.MeshStandardMaterial({ color: 0xc98d64, roughness: 0.8 }),
-    );
-    head.position.y = 1.95;
-    group.add(head);
-    const cap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.32, 0.12, 10),
-      new THREE.MeshStandardMaterial({ color: 0x0a1a4a, roughness: 0.8 }),
-    );
-    cap.position.y = 2.15;
-    group.add(cap);
+  function spawnFootCop(px, pz) {
+    const { group, legL, legR } = copMesh();
+    const a = rng.angle();
+    const x = px + Math.sin(a) * 30;
+    const z = pz + Math.cos(a) * 30;
     group.position.set(x, 0, z);
     scene.add(group);
-    const cop = { mesh: group, x, z, angle: 0, speed: 0, onFoot: true, car: null };
-    cops.push(cop);
+    const cop = { group, legL, legR, x, z, angle: 0, phase: 0 };
+    footCops.push(cop);
     return cop;
   }
 
-  function setWanted(stars) {
-    wanted = THREE.MathUtils.clamp(stars, 0, WANTED.maxStars);
-    heatTimer = 0;
-    decayTimer = 0;
-    // Match the force on the street to the stars.
-    const wantCars = WANTED.policeCars[wanted];
-    const wantFoot = WANTED.footCops[wanted];
-    const carsNow = cops.filter((c) => !c.onFoot).length;
-    const footNow = cops.filter((c) => c.onFoot).length;
-    for (let i = carsNow; i < wantCars; i++) spawnPoliceCar();
-    for (let i = footNow; i < wantFoot; i++) spawnFootCop(0, 0);
-    // Too many: the extra ones give up and leave.
-    let extra = carsNow - wantCars;
-    for (const cop of [...cops]) {
-      if (extra <= 0) break;
-      if (!cop.onFoot) {
-        scene.remove(cop.mesh);
-        cops.splice(cops.indexOf(cop), 1);
-        extra -= 1;
-      }
-    }
-    extra = footNow - wantFoot;
-    for (const cop of [...cops]) {
-      if (extra <= 0) break;
-      if (cop.onFoot) {
-        scene.remove(cop.mesh);
-        cops.splice(cops.indexOf(cop), 1);
-        extra -= 1;
-      }
-    }
+  function removeCopCar(car) {
+    vehicles.removeCar(car);
+    const i = copCars.indexOf(car);
+    if (i >= 0) copCars.splice(i, 1);
   }
 
-  function addWanted(stars) {
-    setWanted(wanted + stars);
+  function removeFootCop(cop) {
+    scene.remove(cop.group);
+    const i = footCops.indexOf(cop);
+    if (i >= 0) footCops.splice(i, 1);
   }
 
-  function update(dt, player, events) {
-    heatTimer += dt;
-    if (wanted > 0 && heatTimer > WANTED.decayDelay) {
-      decayTimer += dt;
-      if (decayTimer > WANTED.decayStep) {
-        decayTimer = 0;
-        setWanted(wanted - 1);
+  const police = {
+    copCars,
+    footCops,
+    // Put a foot cop at an exact spot (screenshot staging).
+    placeFootCop(x, z) {
+      const { group, legL, legR } = copMesh();
+      group.position.set(x, 0, z);
+      scene.add(group);
+      const cop = { group, legL, legR, x, z, angle: 0, phase: 0 };
+      footCops.push(cop);
+      return cop;
+    },
+    get wanted() {
+      return Math.min(CFG.maxWanted, Math.floor(heat / CFG.heatPerStar));
+    },
+    get heat() {
+      return heat;
+    },
+
+    // A crime adds heat now and resets the calm timer.
+    addHeat(n) {
+      heat = Math.min(100, heat + n);
+      lastCrime = time;
+    },
+    setHeat(n) {
+      heat = Math.max(0, Math.min(100, n));
+      lastCrime = time;
+    },
+    reset() {
+      heat = 0;
+      bustTimer = 0;
+      for (const c of [...copCars]) removeCopCar(c);
+      for (const c of [...footCops]) removeFootCop(c);
+    },
+
+    // Distance to the nearest police unit, for the HUD and heat decay.
+    nearestCop(px, pz) {
+      let best = Infinity;
+      for (const c of copCars) best = Math.min(best, Math.hypot(c.x - px, c.z - pz));
+      for (const c of footCops) best = Math.min(best, Math.hypot(c.x - px, c.z - pz));
+      return best;
+    },
+
+    update(dt, player, playerCar) {
+      time += dt;
+      const px = playerCar ? playerCar.x : player.x;
+      const pz = playerCar ? playerCar.z : player.z;
+      const wanted = police.wanted;
+
+      // Heat cools: fast when calm and unseen, slow while the chase is on.
+      const calm = time - lastCrime > CFG.calmSeconds;
+      const near = police.nearestCop(px, pz);
+      const rate = calm && near > 50 ? CFG.heatDecayCalm : CFG.heatDecayHot;
+      if (heat > 0) heat = Math.max(0, heat - rate * dt);
+
+      // Keep the pursuit sized to the wanted level. Staged cars are never
+      // the ones removed when the level drops.
+      const wantCars = Math.min(wanted, CFG.copCarCount);
+      while (copCars.length < wantCars) spawnCopCar(px, pz);
+      while (copCars.length > wantCars) {
+        let i = copCars.length - 1;
+        while (i >= 0 && copCars[i].staged) i -= 1;
+        if (i < 0) break;
+        removeCopCar(copCars[i]);
       }
-    }
-    const px = player.inCar ? player.inCar.x : player.x;
-    const pz = player.inCar ? player.inCar.z : player.z;
-    for (const cop of cops) {
-      const dx = px - cop.x;
-      const dz = pz - cop.z;
-      const dist = Math.hypot(dx, dz);
-      if (cop.onFoot) {
-        // Foot cops sprint at the player, and catch him if they get close.
-        const want = Math.atan2(dx, dz);
-        cop.angle = want;
-        cop.speed = dist < 40 ? 7.5 : 4;
-        cop.x += Math.sin(cop.angle) * cop.speed * dt;
-        cop.z += Math.cos(cop.angle) * cop.speed * dt;
-        if (dist < 1.6 && !player.inCar) {
-          events.onBusted();
-          return;
+      const wantCops = wanted >= 2 ? Math.min(wanted - 1, CFG.copFootCount) : 0;
+      while (footCops.length < wantCops) spawnFootCop(px, pz);
+      while (footCops.length > wantCops) removeFootCop(footCops[footCops.length - 1]);
+
+      // Cop cars: steer at the player, ram the player's car. Cars staged for
+      // a screenshot hold their pose instead of chasing.
+      for (const car of copCars) {
+        if (car.staged) {
+          car.group.position.set(car.x, 0, car.z);
+          car.group.rotation.y = car.angle;
+          continue;
         }
-      } else {
-        // Police cars steer at the player and ram; at 3+ stars one cuts ahead instead.
-        const want = Math.atan2(dx, dz);
-        let diff = want - cop.angle;
+        const dx = px - car.x;
+        const dz = pz - car.z;
+        const dist = Math.hypot(dx, dz) || 1;
+        const wantAngle = Math.atan2(dx, dz);
+        let diff = wantAngle - car.angle;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
-        const topSpeed = 26 + wanted * 2.5;
-        cop.speed = THREE.MathUtils.damp(cop.speed, dist < 60 ? topSpeed : topSpeed * 0.7, 1.5, dt);
-        cop.angle += THREE.MathUtils.clamp(diff, -2.2 * dt, 2.2 * dt);
-        cop.x += Math.sin(cop.angle) * cop.speed * dt;
-        cop.z += Math.cos(cop.angle) * cop.speed * dt;
-        const hit = world.collideCircle(cop.x, cop.z, 2.2);
-        cop.x = hit.x;
-        cop.z = hit.z;
-        // Ram the player's car: damage, and a shove.
-        if (player.inCar && dist < 4.5) {
-          player.inCar.health -= 4 * dt * 10;
-          if (events.onRam) events.onRam();
+        car.angle += Math.max(-2.4 * dt, Math.min(2.4 * dt, diff));
+        car.speed = Math.min(CFG.copCarSpeed, car.speed + 12 * dt);
+        if (dist > 6) {
+          car.x += Math.sin(car.angle) * car.speed * dt;
+          car.z += Math.cos(car.angle) * car.speed * dt;
+        } else if (playerCar) {
+          // Ramming: shove the player's car and scrub its speed.
+          const push = 3 * dt;
+          playerCar.x += (dx / dist) * push * 4;
+          playerCar.z += (dz / dist) * push * 4;
+          playerCar.speed *= 1 - 1.8 * dt;
+          if (hooks.onRam) hooks.onRam();
         }
-        // Flash the light bar.
-        const bar = cop.mesh.getObjectByName('lightbar');
-        if (bar) {
-          bar.material.emissive.setHex(Math.floor(performance.now() / 300) % 2 ? 0xff2222 : 0x2244ff);
+        const fixed = world.resolveCircle(car.x, car.z, 1.7);
+        car.x = fixed.x;
+        car.z = fixed.z;
+        car.group.position.set(car.x, 0, car.z);
+        car.group.rotation.y = car.angle;
+      }
+
+      // Foot cops: run at the player; hold close and the player is busted.
+      let busting = false;
+      for (const cop of footCops) {
+        if (cop.down) continue;
+        const dx = px - cop.x;
+        const dz = pz - cop.z;
+        const dist = Math.hypot(dx, dz) || 1;
+        cop.angle = Math.atan2(dx, dz);
+        if (dist > 1.6) {
+          cop.x += (dx / dist) * CFG.copFootSpeed * dt;
+          cop.z += (dz / dist) * CFG.copFootSpeed * dt;
         }
+        const fixed = world.resolveCircle(cop.x, cop.z, 0.4);
+        cop.x = fixed.x;
+        cop.z = fixed.z;
+        cop.group.position.set(cop.x, 0, cop.z);
+        cop.group.rotation.y = cop.angle;
+        cop.phase += dt * 9;
+        cop.legL.rotation.x = Math.sin(cop.phase) * 0.6;
+        cop.legR.rotation.x = -Math.sin(cop.phase) * 0.6;
+        if (!playerCar && dist < CFG.bustRange) busting = true;
       }
-      cop.mesh.position.set(cop.x, 0, cop.z);
-      cop.mesh.rotation.y = cop.angle;
-    }
-    // Foot cops start next to the action, not at the map's edge.
-    for (const cop of cops) {
-      if (cop.onFoot && Math.hypot(cop.x - px, cop.z - pz) > 120) {
-        cop.x = px + (rng.chance(0.5) ? 30 : -30);
-        cop.z = pz + (rng.chance(0.5) ? 30 : -30);
+      if (busting) {
+        bustTimer += dt;
+        if (bustTimer > CFG.bustHold && hooks.onBusted) {
+          bustTimer = 0;
+          hooks.onBusted();
+        }
+      } else {
+        bustTimer = Math.max(0, bustTimer - dt * 2);
       }
-    }
-  }
-
-  function clear() {
-    for (const cop of cops) scene.remove(cop.mesh);
-    cops.length = 0;
-    wanted = 0;
-  }
-
-  return {
-    get wanted() {
-      return wanted;
     },
-    cops,
-    setWanted,
-    addWanted,
-    update,
-    clear,
   };
+  return police;
 }

@@ -1,124 +1,138 @@
-// The HUD: wanted stars, cash, health and armour bars, objective line, message
-// toast, speed when driving, and a live minimap — the whole state of the run at a
-// glance, which is also what the judge's screenshots show of the game.
-import { CITY, WANTED } from './config.js';
+// The HUD: wanted stars, cash and respect, health and armour bars, the
+// objective line, toasts, speed and ammo, and a live top-down minimap drawn
+// on a 2D canvas. All of it is plain DOM over the 3D view.
 
-export function createHud() {
-  const el = (id) => document.getElementById(id);
-  const starsEl = el('stars');
-  const cashEl = el('cash');
-  const respectEl = el('respect');
-  const healthFill = el('health-fill');
-  const armorFill = el('armor-fill');
-  const objectiveEl = el('objective');
-  const messageEl = el('message');
-  const speedEl = el('speed');
-  const ammoEl = el('ammo');
-  const timerEl = el('timer');
-  const minimap = el('minimap');
-  const mm = minimap.getContext('2d');
-  let messageTimer = 0;
+import { CFG } from './config.js';
 
-  function showMessage(text) {
-    messageEl.textContent = text;
-    messageEl.style.opacity = '1';
-    messageTimer = 3.5;
-  }
+export function createHud(world) {
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    stars: $('stars'),
+    cash: $('cash'),
+    respect: $('respect'),
+    healthFill: $('health-fill'),
+    armourFill: $('armour-fill'),
+    objective: $('objective'),
+    missionName: $('mission-name'),
+    toast: $('toast'),
+    speed: $('speed'),
+    ammo: $('ammo'),
+    timer: $('timer'),
+    minimap: $('minimap'),
+    damage: $('damage'),
+  };
+  const mapCtx = els.minimap.getContext('2d');
+  let toastTimer = null;
+  let flash = 0;
 
-  function drawMinimap(game) {
-    const size = minimap.width;
-    const scale = size / (CITY.half * 2);
-    const toMap = (x, z) => [(x + CITY.half) * scale, (z + CITY.half) * scale];
-    mm.fillStyle = '#101c26';
-    mm.fillRect(0, 0, size, size);
-    // Streets.
-    mm.strokeStyle = '#3a4a5a';
-    mm.lineWidth = 3;
-    for (let c = -CITY.half; c <= CITY.half; c += CITY.block) {
-      const [x1, y1] = toMap(c, -CITY.half);
-      const [x2, y2] = toMap(c, CITY.half);
-      mm.beginPath();
-      mm.moveTo(x1, y1);
-      mm.lineTo(x2, y2);
-      mm.stroke();
-      const [x3, y3] = toMap(-CITY.half, c);
-      const [x4, y4] = toMap(CITY.half, c);
-      mm.beginPath();
-      mm.moveTo(x3, y3);
-      mm.lineTo(x4, y4);
-      mm.stroke();
+  function drawMinimap(state) {
+    const c = mapCtx;
+    const S = 180;
+    const scale = S / 360; // world -180..180 maps to the canvas
+    const toMap = (x, z) => [90 + x * scale, 90 + z * scale];
+    c.fillStyle = '#101826';
+    c.fillRect(0, 0, S, S);
+    // Ocean and beach on the east edge.
+    c.fillStyle = '#1d6f8e';
+    c.fillRect(90 + 178 * scale, 0, S, S);
+    c.fillStyle = '#e8cf9a';
+    c.fillRect(90 + 156 * scale, 0, 22 * scale + 2, S);
+    // Roads.
+    c.strokeStyle = '#3a4152';
+    c.lineWidth = 12 * scale;
+    for (const s of [-130, -78, -26, 26, 78, 130]) {
+      c.beginPath();
+      c.moveTo(...toMap(s, -160));
+      c.lineTo(...toMap(s, 160));
+      c.stroke();
+      c.beginPath();
+      c.moveTo(...toMap(-160, s));
+      c.lineTo(...toMap(160, s));
+      c.stroke();
     }
-    // Ocean edge.
-    mm.fillStyle = '#2a7f9e';
-    mm.fillRect(0, size - 12, size, 12);
-    // Mission marker: a pulsing yellow diamond.
-    if (game.marker) {
-      const [mx, my] = toMap(game.marker.x, game.marker.z);
-      const pulse = 5 + Math.sin(performance.now() / 200) * 2;
-      mm.fillStyle = '#ffd60a';
-      mm.beginPath();
-      mm.moveTo(mx, my - pulse);
-      mm.lineTo(mx + pulse, my);
-      mm.lineTo(mx, my + pulse);
-      mm.lineTo(mx - pulse, my);
-      mm.closePath();
-      mm.fill();
+    // Buildings.
+    c.fillStyle = '#5a6274';
+    for (const b of world.colliders) {
+      const [x, z] = toMap(b.minX, b.minZ);
+      c.fillRect(x, z, (b.maxX - b.minX) * scale, (b.maxZ - b.minZ) * scale);
     }
-    // Traffic (white) and police (blue).
-    for (const car of game.vehicles.cars) {
-      if (car.kind === 'player') continue;
-      const [cx, cy] = toMap(car.x, car.z);
-      mm.fillStyle = car.kind === 'police' ? '#3a86ff' : '#dfe6ee';
-      mm.fillRect(cx - 2, cy - 2, 4, 4);
+    // Mission marker.
+    if (state.marker) {
+      const [x, z] = toMap(state.marker.x, state.marker.z);
+      c.fillStyle = '#ffd24a';
+      c.beginPath();
+      c.arc(x, z, 5, 0, Math.PI * 2);
+      c.fill();
     }
-    // The player: a yellow arrow pointing the way he faces.
-    const px = game.player.inCar ? game.player.inCar.x : game.player.x;
-    const pz = game.player.inCar ? game.player.inCar.z : game.player.z;
-    const angle = game.player.inCar ? game.player.inCar.angle : game.player.angle;
-    const [mx, my] = toMap(px, pz);
-    mm.save();
-    mm.translate(mx, my);
-    mm.rotate(Math.PI - angle);
-    mm.fillStyle = '#ffd60a';
-    mm.beginPath();
-    mm.moveTo(0, -7);
-    mm.lineTo(5, 6);
-    mm.lineTo(-5, 6);
-    mm.closePath();
-    mm.fill();
-    mm.restore();
-    // North marker.
-    mm.fillStyle = '#dfe6ee';
-    mm.font = 'bold 11px sans-serif';
-    mm.fillText('N', size / 2 - 4, 12);
+    // Traffic as grey dots, police as red dots.
+    c.fillStyle = '#9aa5b8';
+    for (const car of state.cars) {
+      const [x, z] = toMap(car.x, car.z);
+      c.fillRect(x - 1.5, z - 1.5, 3, 3);
+    }
+    c.fillStyle = '#ff4444';
+    for (const car of state.policeCars) {
+      const [x, z] = toMap(car.x, car.z);
+      c.fillRect(x - 2, z - 2, 4, 4);
+    }
+    // The player: a white arrow that turns with him.
+    const [px, pz] = toMap(state.playerX, state.playerZ);
+    c.save();
+    c.translate(px, pz);
+    c.rotate(state.playerAngle);
+    c.fillStyle = '#ffffff';
+    c.beginPath();
+    c.moveTo(0, -6);
+    c.lineTo(4, 5);
+    c.lineTo(-4, 5);
+    c.closePath();
+    c.fill();
+    c.restore();
   }
 
   return {
-    showMessage,
     setObjective(text) {
-      objectiveEl.textContent = text;
+      els.objective.textContent = text;
     },
-    update(game, dt) {
-      if (messageTimer > 0) {
-        messageTimer -= dt;
-        if (messageTimer <= 0) messageEl.style.opacity = '0';
+    setMission(name) {
+      els.missionName.textContent = name;
+    },
+    toast(msg) {
+      els.toast.textContent = msg;
+      els.toast.style.opacity = '1';
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        els.toast.style.opacity = '0';
+      }, 3400);
+    },
+    flashDamage() {
+      flash = 1;
+    },
+
+    update(state, dt) {
+      // Wanted stars: filled ★ up to the level, empty ☆ after.
+      let stars = '';
+      for (let i = 0; i < CFG.maxWanted; i++) stars += i < state.wanted ? '★' : '☆';
+      els.stars.textContent = stars;
+      els.stars.style.color = state.wanted > 0 ? '#ffd24a' : '#5a6274';
+      els.cash.textContent = `$${state.cash}`;
+      els.respect.textContent = `Respect ${state.respect}`;
+      els.healthFill.style.width = `${Math.max(0, state.health)}%`;
+      els.armourFill.style.width = `${Math.max(0, state.armour)}%`;
+      els.speed.textContent = state.inCar ? `${Math.round(Math.abs(state.speed) * 2.24)} mph` : '';
+      els.ammo.textContent = state.hasPistol
+        ? state.reloading
+          ? 'Reloading…'
+          : `Pistol ${state.ammo}/${CFG.magSize}`
+        : state.inCar
+          ? ''
+          : 'F — punch';
+      els.timer.textContent = state.timer > 0 ? `${Math.ceil(state.timer)}s` : '';
+      if (flash > 0) {
+        flash = Math.max(0, flash - dt * 2);
+        els.damage.style.opacity = String(flash * 0.55);
       }
-      const stars = '★'.repeat(game.police.wanted) + '☆'.repeat(WANTED.maxStars - game.police.wanted);
-      starsEl.textContent = stars;
-      starsEl.style.color = game.police.wanted > 0 ? '#ff4757' : '#ffd60a';
-      cashEl.textContent = `$${game.player.cash}`;
-      respectEl.textContent = `Respect ${game.player.respect}`;
-      healthFill.style.width = `${game.player.health}%`;
-      healthFill.style.background = game.player.health > 40 ? '#2ecc71' : '#e74c3c';
-      armorFill.style.width = `${game.player.armor}%`;
-      speedEl.textContent = game.player.inCar
-        ? `${Math.round(Math.abs(game.player.inCar.speed) * 3.6)} km/h`
-        : '';
-      ammoEl.textContent = game.combat.hasPistol
-        ? `Pistol ${game.combat.ammo}/12`
-        : 'Fists — press F to punch';
-      timerEl.textContent = game.missionTimer > 0 ? `⏱ ${Math.ceil(game.missionTimer)}s` : '';
-      drawMinimap(game);
+      drawMinimap(state);
     },
   };
 }

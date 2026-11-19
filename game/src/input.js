@@ -1,90 +1,101 @@
-// Keyboard and mouse, sampled once a frame. The game talks in named actions, not
-// key codes, so a rebind is one entry in the map below. Controls: WASD/arrows to
-// move and drive, E to enter/exit a car, F to punch, mouse click to fire the pistol
-// once armed, Shift to sprint, Space for the handbrake, Esc to pause, Enter to
-// confirm, M to mute.
-export const ACTION_UP = 'up';
-export const ACTION_DOWN = 'down';
-export const ACTION_LEFT = 'left';
-export const ACTION_RIGHT = 'right';
-export const ACTION_ENTER = 'enter';
-export const ACTION_PUNCH = 'punch';
-export const ACTION_FIRE = 'fire';
-export const ACTION_SPRINT = 'sprint';
-export const ACTION_HANDBRAKE = 'handbrake';
-export const ACTION_PAUSE = 'pause';
-export const ACTION_CONFIRM = 'confirm';
-export const ACTION_MUTE = 'mute';
+// Keyboard and mouse, turned into named actions. The rest of the game never
+// reads a key code: it asks whether the player is holding "forward", or
+// whether "enter" was just pressed this frame.
 
-const KEY_MAP = {
-  KeyW: ACTION_UP,
-  ArrowUp: ACTION_UP,
-  KeyS: ACTION_DOWN,
-  ArrowDown: ACTION_DOWN,
-  KeyA: ACTION_LEFT,
-  ArrowLeft: ACTION_LEFT,
-  KeyD: ACTION_RIGHT,
-  ArrowRight: ACTION_RIGHT,
-  KeyE: ACTION_ENTER,
-  KeyF: ACTION_PUNCH,
-  ShiftLeft: ACTION_SPRINT,
-  ShiftRight: ACTION_SPRINT,
-  Space: ACTION_HANDBRAKE,
-  Escape: ACTION_PAUSE,
-  KeyP: ACTION_PAUSE,
-  Enter: ACTION_CONFIRM,
-  KeyM: ACTION_MUTE,
+// Held movement keys, by the physical key, so WASD and arrows both work.
+const MOVE_KEYS = {
+  forward: ['KeyW', 'ArrowUp'],
+  back: ['KeyS', 'ArrowDown'],
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
 };
 
-export function createInput(canvas) {
+// One-shot keys: pressing once fires the action, holding does not repeat it.
+const PRESS_KEYS = {
+  confirm: ['Enter'],
+  pause: ['Escape', 'KeyP'],
+  enter: ['KeyE'],
+  punch: ['KeyF'],
+  reload: ['KeyR'],
+  brake: ['Space'],
+  sprint: ['ShiftLeft', 'ShiftRight'],
+};
+
+export function createInput() {
   const held = new Set();
   const pressed = new Set();
-  let mouseDown = false;
-  let mousePressed = false;
+  const mouse = { x: 0, y: 0, down: false, clicked: false };
 
   function onKeyDown(e) {
-    const action = KEY_MAP[e.code];
-    if (!action) return;
-    if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
-    if (!held.has(action)) pressed.add(action);
-    held.add(action);
+    if (e.repeat) return;
+    held.add(e.code);
+    pressed.add(e.code);
+    // Space scrolls the page; the game owns it while playing.
+    if (e.code === 'Space') e.preventDefault();
   }
   function onKeyUp(e) {
-    const action = KEY_MAP[e.code];
-    if (action) held.delete(action);
+    held.delete(e.code);
+  }
+  function onMouseMove(e) {
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
   }
   function onMouseDown(e) {
     if (e.button === 0) {
-      mouseDown = true;
-      mousePressed = true;
+      mouse.down = true;
+      mouse.clicked = true;
     }
   }
   function onMouseUp(e) {
-    if (e.button === 0) mouseDown = false;
+    if (e.button === 0) mouse.down = false;
   }
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
-  canvas.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mousedown', onMouseDown);
   window.addEventListener('mouseup', onMouseUp);
 
+  // Is any of the named action's keys held right now?
+  function isHeld(name) {
+    return MOVE_KEYS[name].some((code) => held.has(code));
+  }
+
+  // Was any of the named action's keys pressed since the last frame?
+  // Edge-triggered actions must call this once a frame; it clears on read.
+  function wasPressed(name) {
+    const keys = PRESS_KEYS[name] || [];
+    return keys.some((code) => pressed.has(code));
+  }
+
   return {
-    held(action) {
-      return held.has(action) || (action === ACTION_FIRE && mouseDown);
+    mouse,
+    isHeld,
+    wasPressed,
+    // -1 (left) .. +1 (right) from the held steering keys.
+    steer() {
+      let s = 0;
+      if (isHeld('left')) s -= 1;
+      if (isHeld('right')) s += 1;
+      return s;
     },
-    pressed(action) {
-      return pressed.has(action) || (action === ACTION_FIRE && mousePressed);
+    // -1 (back) .. +1 (forward) from the held throttle keys.
+    throttle() {
+      let t = 0;
+      if (isHeld('forward')) t += 1;
+      if (isHeld('back')) t -= 1;
+      return t;
     },
-    // Steering / throttle axes, -1..1, shared by driving and walking.
-    axis() {
-      const x = (held.has(ACTION_RIGHT) ? 1 : 0) - (held.has(ACTION_LEFT) ? 1 : 0);
-      const y = (held.has(ACTION_UP) ? 1 : 0) - (held.has(ACTION_DOWN) ? 1 : 0);
-      return { x, y };
+    get sprinting() {
+      return PRESS_KEYS.sprint.some((code) => held.has(code));
     },
-    // Call once at the end of each frame: a press only counts on the frame it happens.
+    get handbrake() {
+      return held.has('Space');
+    },
+    // Call once at the end of each frame: one-shot presses expire.
     endFrame() {
       pressed.clear();
-      mousePressed = false;
+      mouse.clicked = false;
     },
   };
 }

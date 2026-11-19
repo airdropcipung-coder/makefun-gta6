@@ -1,40 +1,53 @@
-// Save and best score, kept in localStorage. A save remembers cash, missions done
-// and the best respect earned; it never stores anything secret, and a private window
-// simply keeps nothing between visits.
-import { SAVE_KEY, BEST_KEY } from './config.js';
+// Save and best score in localStorage. Nothing else persists: the city,
+// the story and the wanted level are rebuilt fresh every run.
 
-export function readSave() {
+import { STORAGE_KEY, BEST_KEY } from './config.js';
+
+// The shape a save always has, so a missing or corrupt save still loads.
+export function blankSave() {
+  return {
+    cash: 50,
+    respect: 0,
+    mission: 0,
+    storyDone: false,
+    pickups: [],
+    faresDone: 0,
+  };
+}
+
+export function loadSave() {
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (typeof data !== 'object' || !data) return null;
-    return data;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return blankSave();
+    const parsed = JSON.parse(raw);
+    return { ...blankSave(), ...parsed };
   } catch {
-    return null;
+    return blankSave();
   }
 }
 
-export function writeSave(data) {
+export function writeSave(save) {
   try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(save));
   } catch {
-    // Storage can be turned off: the save then lasts for this visit only.
+    // Private mode or a full store: the game plays on without saving.
   }
 }
 
-export function readBest() {
+export function loadBest() {
   try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
+    const raw = window.localStorage.getItem(BEST_KEY);
+    const n = raw === null ? 0 : Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : 0;
   } catch {
     return 0;
   }
 }
 
-export function writeBest(value) {
+export function writeBest(cash) {
   try {
-    window.localStorage.setItem(BEST_KEY, String(value));
+    if (cash > loadBest()) window.localStorage.setItem(BEST_KEY, String(cash));
   } catch {
-    /* storage off */
+    // See writeSave.
   }
 }

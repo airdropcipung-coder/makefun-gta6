@@ -1,108 +1,120 @@
-// Pedestrians: the city's foot traffic. They walk the sidewalks, chat in pairs, and
-// run when a gun goes off or a car comes at them — the living city the judge's first
-// criterion asks the screenshots to show.
-import * as THREE from 'three';
-import { PEDS } from './config.js';
+// Foot traffic: people who stroll the sidewalks, cross at corners, and run
+// when a gun goes off. They never enter buildings and never drive.
 
-const SHIRTS = [0xe63946, 0xf4a261, 0x2a9d8f, 0xe9c46a, 0x6d28d9, 0xef476f, 0x06d6a0, 0x118ab2];
+import * as THREE from 'three';
+import { CFG } from './config.js';
+import { STREETS } from './world.js';
+
+const SHIRT_COLORS = [0xd86a4a, 0x4a8ad8, 0x6ab04a, 0xd8b04a, 0x9a5ad8, 0xd8d8d8, 0x3a3a3a];
+
+function pedMesh(color) {
+  const group = new THREE.Group();
+  const shirt = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xb98a68, roughness: 0.8 });
+  const pants = new THREE.MeshStandardMaterial({ color: 0x33363d, roughness: 0.9 });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.28), shirt);
+  torso.position.y = 1.05;
+  torso.castShadow = true;
+  group.add(torso);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.3), skin);
+  head.position.y = 1.55;
+  head.castShadow = true;
+  group.add(head);
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.7, 0.2), pants);
+  legL.position.set(-0.13, 0.35, 0);
+  group.add(legL);
+  const legR = legL.clone();
+  legR.position.x = 0.13;
+  group.add(legR);
+  return { group, legL, legR };
+}
 
 export function createPedestrians(scene, world, rng) {
   const list = [];
 
-  function makeBody(colour) {
-    const group = new THREE.Group();
-    const shirt = new THREE.MeshStandardMaterial({ color: colour, roughness: 0.9 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0xc98d64, roughness: 0.8 });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.44, 1.05, 8), shirt);
-    body.position.y = 1.1;
-    body.castShadow = true;
-    group.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), skin);
-    head.position.y = 1.85;
-    head.castShadow = true;
-    group.add(head);
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.65, 0.2), new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 1 }));
-    leg.position.set(-0.18, 0.32, 0);
-    group.add(leg);
-    const leg2 = leg.clone();
-    leg2.position.x = 0.18;
-    group.add(leg2);
-    group.userData.legs = [leg, leg2];
-    return group;
-  }
-
-  function spawnOne() {
-    const p = world.randomSidewalkPoint();
-    const mesh = makeBody(rng.pick(SHIRTS));
-    mesh.position.set(p.x, 0, p.z);
-    scene.add(mesh);
+  function spawn(x, z) {
+    const { group, legL, legR } = pedMesh(rng.pick(SHIRT_COLORS));
+    group.position.set(x, 0, z);
+    scene.add(group);
     const ped = {
-      mesh,
-      x: p.x,
-      z: p.z,
-      angle: rng.range(0, Math.PI * 2),
-      speed: rng.range(PEDS.speedMin, PEDS.speedMax),
-      target: world.randomSidewalkPoint(),
-      fleeing: 0,
+      group,
+      legL,
+      legR,
+      x,
+      z,
+      angle: rng.angle(),
+      speed: CFG.pedSpeed * rng.range(0.8, 1.25),
+      target: null,
+      fleeing: false,
+      fleeTimer: 0,
       phase: rng.range(0, 6),
-      alive: true,
+      down: false,
     };
+    ped.target = pickTarget(ped);
     list.push(ped);
     return ped;
   }
 
-  function spawn(count) {
-    for (let i = 0; i < count; i++) spawnOne();
+  // A nearby sidewalk corner to walk towards.
+  function pickTarget(ped) {
+    const s = rng.pick(STREETS);
+    const along = rng.range(-140, 140);
+    if (rng.chance(0.5)) return { x: s + 9, z: along };
+    return { x: along, z: s + 9 };
   }
 
-  function scare(x, z, radius) {
-    for (const ped of list) {
-      if (!ped.alive) continue;
-      const d = Math.hypot(ped.x - x, ped.z - z);
-      if (d < radius) {
-        ped.fleeing = 4;
-        ped.target = { x: ped.x + (ped.x - x) * 2, z: ped.z + (ped.z - z) * 2 };
+  return {
+    list,
+    spawn,
+    spawnMany(n) {
+      for (let i = 0; i < n; i++) {
+        const p = world.randomStreetPoint();
+        const off = rng.chance(0.5) ? 9 : -9;
+        spawn(p.axis === 'z' ? p.x + off : p.x, p.axis === 'z' ? p.z : p.z + off);
       }
-    }
-  }
+    },
 
-  function update(dt, playerPos) {
-    for (const ped of list) {
-      if (!ped.alive) continue;
-      const dx = ped.target.x - ped.x;
-      const dz = ped.target.z - ped.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 3) {
-        ped.target = world.randomSidewalkPoint();
-        continue;
-      }
-      const want = Math.atan2(dx, dz);
-      ped.angle = want;
-      const speed = ped.fleeing > 0 ? 5.5 : ped.speed;
-      if (ped.fleeing > 0) ped.fleeing -= dt;
-      ped.x += Math.sin(ped.angle) * speed * dt;
-      ped.z += Math.cos(ped.angle) * speed * dt;
-      const hit = world.collideCircle(ped.x, ped.z, 0.5);
-      ped.x = hit.x;
-      ped.z = hit.z;
-      ped.phase += speed * dt * 2;
-      const swing = Math.sin(ped.phase) * 0.4;
-      ped.mesh.userData.legs[0].rotation.x = swing;
-      ped.mesh.userData.legs[1].rotation.x = -swing;
-      ped.mesh.position.set(ped.x, 0, ped.z);
-      ped.mesh.rotation.y = ped.angle;
-      // A pedestrian hit by a fast car is knocked down (and the player earns a star).
-      if (playerPos && playerPos.inCar && playerPos.speed > 8) {
-        const d = Math.hypot(ped.x - playerPos.x, ped.z - playerPos.z);
-        if (d < 2.4) {
-          ped.alive = false;
-          ped.mesh.rotation.x = Math.PI / 2;
-          ped.mesh.position.y = 0.3;
-          if (playerPos.onPedHit) playerPos.onPedHit(ped);
+    // A gunshot at (x, z) sends everyone nearby running.
+    scare(x, z, radius) {
+      for (const ped of list) {
+        if (ped.down) continue;
+        const d = Math.hypot(ped.x - x, ped.z - z);
+        if (d < radius) {
+          ped.fleeing = true;
+          ped.fleeTimer = 4;
+          ped.angle = Math.atan2(ped.x - x, ped.z - z);
         }
       }
-    }
-  }
+    },
 
-  return { list, spawn, spawnOne, scare, update };
+    update(dt) {
+      for (const ped of list) {
+        if (ped.down) continue;
+        let speed = ped.speed;
+        if (ped.fleeing) {
+          speed = CFG.pedFleeSpeed;
+          ped.fleeTimer -= dt;
+          if (ped.fleeTimer <= 0) ped.fleeing = false;
+        } else if (!ped.target || Math.hypot(ped.target.x - ped.x, ped.target.z - ped.z) < 2) {
+          ped.target = pickTarget(ped);
+        }
+        if (!ped.fleeing && ped.target) {
+          const dx = ped.target.x - ped.x;
+          const dz = ped.target.z - ped.z;
+          ped.angle = Math.atan2(dx, dz);
+        }
+        const nx = ped.x + Math.sin(ped.angle) * speed * dt;
+        const nz = ped.z + Math.cos(ped.angle) * speed * dt;
+        const fixed = world.resolveCircle(nx, nz, 0.4);
+        ped.x = fixed.x;
+        ped.z = fixed.z;
+        ped.group.position.set(ped.x, 0, ped.z);
+        ped.group.rotation.y = ped.angle;
+        ped.phase += dt * speed * 2.4;
+        const swing = Math.sin(ped.phase) * 0.5;
+        ped.legL.rotation.x = swing;
+        ped.legR.rotation.x = -swing;
+      }
+    },
+  };
 }

@@ -1,83 +1,102 @@
-// Staged screenshot scenes: ?shot=<name>&seed=1 puts the game in one composed
-// moment and paints it twice, then sets window.__shotReady so a screenshot tool
-// knows when to shoot. The four shots are the entry's screenshots: cover, chase, on
-// foot, and the heist.
-//   cover — driving the red sports car down the main avenue at sunset, police behind,
-//           wanted 3, minimap and mission objective on the HUD.
-//   chase — the same avenue, a police roadblock ahead, wanted 4.
-//   foot  — on foot in the plaza, pedestrians and traffic around, mission marker ahead.
-//   heist — outside Bay Jewelers on foot with the pistol, police converging, wanted 3.
-export function stageShot(name, game) {
-  const { player, vehicles, police, peds, world } = game;
-  // Reset the street to a known state.
-  police.clear();
-  for (const car of [...vehicles.cars]) {
-    if (car.kind !== 'player') vehicles.removeCar(car);
-  }
-  vehicles.spawnTraffic(14);
-  vehicles.spawnParked(6);
+// Staged screenshot scenes behind ?shot=cover|chase|foot|heist (with &seed=1).
+// Each one poses the real game — the same player, cars, police and HUD the
+// live game uses — then main.js renders two frames and sets __shotReady.
 
-  // Put the police where the camera can see them: ahead of the player, converging on
-  // him, so the shot shows the chase, not an empty street. (The chase camera sits
-  // behind the player, so police placed behind him would be behind the camera.)
-  function placePolice(count) {
-    const cars = police.cops.filter((c) => !c.onFoot);
-    const baseX = player.inCar ? player.inCar.x : player.x;
-    const baseZ = player.inCar ? player.inCar.z : player.z;
-    const angle = player.inCar ? player.inCar.angle : player.angle;
-    cars.slice(0, count).forEach((cop, i) => {
-      const side = i % 2 === 0 ? -6 : 6;
-      const ahead = 55 + i * 22;
-      cop.x = baseX + Math.sin(angle) * ahead + Math.cos(angle) * side;
-      cop.z = baseZ + Math.cos(angle) * ahead - Math.sin(angle) * side;
-      cop.angle = angle + Math.PI; // facing the player, closing in
-      cop.speed = 22;
-      cop.mesh.position.set(cop.x, 0, cop.z);
-      cop.mesh.rotation.y = cop.angle;
-    });
-  }
+export const SHOT_NAMES = ['cover', 'chase', 'foot', 'heist'];
 
-  if (name === 'cover' || name === 'chase') {
-    const car = game.spawnMissionCar(0xff2222, 0, 120);
-    game.enterCar(car, true);
-    player.angle = Math.PI; // facing -z, toward downtown and the marker
-    car.angle = Math.PI;
-    car.speed = 24;
-    police.setWanted(name === 'cover' ? 3 : 4);
-    placePolice(2);
-    game.marker = { x: 0, z: -260, label: 'Rosa Garage' };
-    game.setObjective('Deliver the sports car to the Rosa Garage — lose the cops!');
-    if (name === 'chase') {
-      // A roadblock ahead: two police cars parked across the avenue, 60 m on.
-      const block1 = vehicles.addCar(-6, 60, Math.PI / 2, 0x111111, 'police');
-      const block2 = vehicles.addCar(6, 60, Math.PI / 2, 0x111111, 'police');
-      block1.speed = 0;
-      block2.speed = 0;
+// Traffic that happens to sit on the staged shot's camera line is removed,
+// so the frame shows the staged scene, not a random passer-by.
+function clearTrafficNear(G, x, z, r) {
+  for (const c of [...G.vehicles.cars]) {
+    if (c.mode === 'traffic' && Math.hypot(c.x - x, c.z - z) < r) G.vehicles.removeCar(c);
+  }
+}
+
+export function stageShot(name, G) {
+  const { player, vehicles, police, pedestrians, missions, combat, hud, render } = G;
+  police.reset();
+  player.group.visible = true;
+
+  if (name === 'cover') {
+    // Driving the red sports car down the main avenue, police converging.
+    const sport = vehicles.spawnCar('sport', 26, -10, 0, 'parked');
+    vehicles.enterCar(sport);
+    clearTrafficNear(G, sport.x, sport.z, 32);
+    police.setHeat(70); // wanted 3, mid-band so decay never drops a star
+    // Converging head-on down the avenue, ahead of the player, frozen in
+    // pose so the frame stays composed while the shot is taken.
+    for (const [x, z] of [[20, 18], [32, 28], [26, 48]]) {
+      const cop = vehicles.spawnCar('police', x, z, Math.PI, 'police');
+      cop.staged = true;
+      police.copCars.push(cop);
     }
-    return { camera: 'chase' };
+    police.copCars.push(...vehicles.cars.filter((c) => c.mode === 'police'));
+    hud.setObjective('Escape the Vipers — lose the cops');
+    hud.setMission('The Big Score');
+    render.snapCamera(sport.x, sport.z, sport.angle, true);
+    return true;
+  }
+
+  if (name === 'chase') {
+    // A police roadblock across the avenue ahead, wanted 4.
+    const sport = vehicles.spawnCar('sport', 26, 4, 0, 'parked');
+    vehicles.enterCar(sport);
+    clearTrafficNear(G, sport.x, sport.z, 32);
+    police.setHeat(90); // wanted 4, mid-band
+    // A roadblock ahead and two more cars flanking it, all frozen in pose.
+    for (const [x, z, a] of [
+      [21, 44, Math.PI / 2],
+      [31, 46, -Math.PI / 2],
+      [16, 30, Math.PI],
+      [36, 32, Math.PI],
+    ]) {
+      const cop = vehicles.spawnCar('police', x, z, a, 'police');
+      cop.staged = true;
+      police.copCars.push(cop);
+    }
+    police.copCars.push(...vehicles.cars.filter((c) => c.mode === 'police'));
+    hud.setObjective('Roadblock ahead — break through!');
+    hud.setMission('Bank Run');
+    render.snapCamera(sport.x, sport.z, sport.angle, true);
+    return true;
   }
 
   if (name === 'foot') {
-    player.x = 0;
-    player.z = 40;
-    player.angle = Math.PI;
-    player.health = 100;
-    game.marker = { x: 0, z: -120, label: 'Market — package' };
-    game.setObjective('Walk to the market and collect the package.');
-    police.setWanted(1);
-    placePolice(1);
-    return { camera: 'foot' };
+    // On foot in the plaza: pedestrians, traffic, the market marker.
+    // The player stands in the open south of the plaza, clear of the palms.
+    player.setPosition(-4, 18);
+    player.angle = Math.atan2(4, -18);
+    player.group.rotation.y = player.angle;
+    for (let i = 0; i < 6; i++) pedestrians.spawn(-14 + i * 5, 2 + (i % 3) * 4);
+    missions.stageMarker(0, 0, 'Collect the package at Palmera Market');
+    hud.setMission('The Pickup');
+    render.snapCamera(player.x, player.z, player.angle, false);
+    return true;
   }
 
-  // heist
-  player.x = 0;
-  player.z = -180;
-  player.angle = Math.PI;
-  player.health = 82;
-  game.combat.givePistol();
-  game.marker = { x: -350, z: 350, label: 'Safehouse' };
-  game.setObjective('The score is yours. Escape to the safehouse!');
-  police.setWanted(3);
-  placePolice(2);
-  return { camera: 'foot' };
+  if (name === 'heist') {
+    // Outside Bay Jewelers on foot, pistol out, police closing in.
+    // The player stands on the street south of the shop, clear of the palms.
+    player.setPosition(46, -28);
+    player.angle = Math.atan2(6, -12);
+    player.group.rotation.y = player.angle;
+    combat.givePistol();
+    police.setHeat(70); // wanted 3, mid-band
+    for (const [x, z, a] of [
+      [30, -52, 0.6],
+      [64, -58, -0.6],
+    ]) {
+      const cop = vehicles.spawnCar('police', x, z, a, 'police');
+      cop.staged = true;
+      police.copCars.push(cop);
+    }
+    police.placeFootCop(54, -34);
+    police.placeFootCop(40, -38);
+    missions.stageMarker(52, -40, 'Rob Bay Jewelers — hold the door 5s');
+    hud.setMission('The Big Score');
+    render.snapCamera(player.x, player.z, player.angle, false);
+    return true;
+  }
+
+  return false;
 }
